@@ -2,543 +2,527 @@
 # -*- coding: utf-8 -*-
 
 """
-TELEGRAM BOT CONTROLLER - RAILWAY VERSION (FIXED)
-Python-telegram-bot v20+ compatible
+TELEGRAM BOT - WHATSAPP PAIRING CONTROLLER
+VERSI FINAL - WORKING DI RAILWAY
 """
 
-import asyncio
-import json
-import logging
 import os
 import sys
+import json
 import time
-import threading
 import random
 import string
+import threading
+import logging
+import traceback
 from datetime import datetime
 from typing import Dict, List, Any
-import traceback
 
 # ==================== KONFIGURASI ====================
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8945238760:AAF0hDSJVRrwbvfrYiZK6BpjumuHDnDIztE")
-ALLOWED_USER_IDS = os.environ.get("ALLOWED_USER_IDS", "8086581937")
-ALLOWED_USER_IDS = [int(x.strip()) for x in ALLOWED_USER_IDS.split(",") if x.strip().isdigit()]
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8945238760:AAF0hDSJVRrwbvfrYiZK6BpjumuHDnDIztE")
+ALLOWED_USERS = os.environ.get("ALLOWED_USER_IDS", "8086581937")
+ALLOWED_USERS = [int(x.strip()) for x in ALLOWED_USERS.split(",") if x.strip().isdigit()]
 # ====================================================
 
-# ==================== LIBRARY ====================
+# ==================== INSTALL LIBRARY ====================
 try:
     from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-    from telegram.constants import ParseMode  # <-- PERBAIKAN DI SINI
+    from telegram.constants import ParseMode
     from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-    from telegram.constants import ChatAction
-except ImportError as e:
-    print(f"❌ Library error: {e}")
-    print("   Jalankan: pip install python-telegram-bot==20.7")
+except ImportError:
+    print("❌ Install telegram library:")
+    print("   pip install python-telegram-bot==20.7")
     sys.exit(1)
 
 # ==================== LOGGING ====================
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
 # ==================== STATE MANAGER ====================
-class StateManager:
+class State:
     def __init__(self):
-        self.state_file = "bot_state.json"
-        self.data = {
-            "metrics": {
-                "active_workers": 0,
-                "total_sessions": 0,
-                "success_count": 0,
-                "failed_count": 0,
-                "rate_limit_count": 0,
-                "total_attempts": 0,
-                "last_updated": None
-            },
+        self.file = "state.json"
+        self.lock = threading.Lock()
+        self.data = self._load()
+    
+    def _load(self):
+        try:
+            if os.path.exists(self.file):
+                with open(self.file, 'r') as f:
+                    return json.load(f)
+        except:
+            pass
+        return {
             "workers": {},
-            "pairing_codes": [],
-            "delivery_logs": [],
-            "config": {
-                "max_workers": 50,
-                "default_target": "6281234567890",
-                "cooldown_seconds": 60,
-                "max_retries": 5
-            },
-            "system": {
-                "started_at": datetime.now().isoformat(),
-                "is_running": False,
-                "total_processed": 0
-            }
+            "codes": [],
+            "logs": [],
+            "stats": {"success": 0, "failed": 0, "rate": 0, "total": 0},
+            "config": {"max": 50, "target": "6281234567890", "cooldown": 60, "retries": 5},
+            "running": False
         }
-        self.lock = threading.Lock()
-        self._load_state()
     
-    def _load_state(self):
+    def _save(self):
         try:
-            if os.path.exists(self.state_file):
-                with open(self.state_file, 'r') as f:
-                    saved = json.load(f)
-                    for key in self.data:
-                        if key in saved:
-                            if isinstance(self.data[key], dict) and isinstance(saved[key], dict):
-                                self.data[key].update(saved[key])
-                            else:
-                                self.data[key] = saved[key]
-                    logger.info(f"✅ State loaded from {self.state_file}")
-        except Exception as e:
-            logger.warning(f"Could not load state: {e}")
+            with open(self.file, 'w') as f:
+                json.dump(self.data, f, indent=2)
+        except:
+            pass
     
-    def _save_state(self):
-        try:
-            with open(self.state_file, 'w') as f:
-                json.dump(self.data, f, indent=2, default=str)
-        except Exception as e:
-            logger.error(f"Failed to save state: {e}")
-    
-    def get_metrics(self) -> Dict:
+    def get(self, key, default=None):
         with self.lock:
-            return self.data["metrics"].copy()
+            return self.data.get(key, default)
     
-    def update_metrics(self, **kwargs):
+    def set(self, key, value):
         with self.lock:
-            for key, value in kwargs.items():
-                if key in self.data["metrics"]:
-                    self.data["metrics"][key] = value
-            self.data["metrics"]["last_updated"] = datetime.now().isoformat()
-            self._save_state()
+            self.data[key] = value
+            self._save()
     
-    def add_worker(self, worker_id: str, info: Dict):
+    def update(self, key, value):
         with self.lock:
-            self.data["workers"][worker_id] = info
-            self.data["metrics"]["total_sessions"] = len(self.data["workers"])
-            self._save_state()
+            if key in self.data:
+                if isinstance(self.data[key], dict):
+                    self.data[key].update(value)
+                else:
+                    self.data[key] = value
+            else:
+                self.data[key] = value
+            self._save()
     
-    def remove_worker(self, worker_id: str):
+    def add_code(self, phone, code):
         with self.lock:
-            if worker_id in self.data["workers"]:
-                del self.data["workers"][worker_id]
-            self.data["metrics"]["total_sessions"] = len(self.data["workers"])
-            self._save_state()
+            self.data["codes"].insert(0, {"phone": phone, "code": code, "time": datetime.now().isoformat()})
+            if len(self.data["codes"]) > 100:
+                self.data["codes"] = self.data["codes"][:100]
+            self._save()
     
-    def get_workers(self) -> Dict:
+    def add_log(self, phone, code, channel):
         with self.lock:
-            return self.data["workers"].copy()
+            self.data["logs"].insert(0, {"to": phone, "code": code, "channel": channel, "time": datetime.now().isoformat()})
+            if len(self.data["logs"]) > 100:
+                self.data["logs"] = self.data["logs"][:100]
+            self._save()
     
-    def add_pairing_code(self, phone: str, code: str):
+    def add_worker(self, wid, info):
         with self.lock:
-            entry = {"phone": phone, "code": code, "timestamp": datetime.now().isoformat()}
-            self.data["pairing_codes"].insert(0, entry)
-            if len(self.data["pairing_codes"]) > 100:
-                self.data["pairing_codes"] = self.data["pairing_codes"][:100]
-            self.data["system"]["total_processed"] += 1
-            self._save_state()
+            self.data["workers"][wid] = info
+            self._save()
     
-    def add_delivery_log(self, phone: str, code: str, channel: str):
+    def remove_worker(self, wid):
         with self.lock:
-            entry = {"to": phone, "code": code, "channel": channel, "timestamp": datetime.now().isoformat()}
-            self.data["delivery_logs"].insert(0, entry)
-            if len(self.data["delivery_logs"]) > 100:
-                self.data["delivery_logs"] = self.data["delivery_logs"][:100]
-            self._save_state()
+            if wid in self.data["workers"]:
+                del self.data["workers"][wid]
+            self._save()
     
-    def get_delivery_logs(self, limit: int = 20) -> List:
+    def get_workers(self):
         with self.lock:
-            return self.data["delivery_logs"][:limit]
+            return self.data.get("workers", {}).copy()
     
-    def get_pairing_codes(self, limit: int = 10) -> List:
+    def get_codes(self, limit=10):
         with self.lock:
-            return self.data["pairing_codes"][:limit]
+            return self.data.get("codes", [])[:limit]
     
-    def update_config(self, **kwargs):
+    def get_logs(self, limit=10):
         with self.lock:
-            for key, value in kwargs.items():
-                if key in self.data["config"]:
-                    self.data["config"][key] = value
-            self._save_state()
+            return self.data.get("logs", [])[:limit]
     
-    def get_config(self) -> Dict:
+    def get_stats(self):
         with self.lock:
-            return self.data["config"].copy()
+            return self.data.get("stats", {}).copy()
     
-    def set_running(self, status: bool):
+    def get_config(self):
         with self.lock:
-            self.data["system"]["is_running"] = status
-            self._save_state()
+            return self.data.get("config", {}).copy()
     
-    def is_running(self) -> bool:
+    def inc_stats(self, key):
         with self.lock:
-            return self.data["system"]["is_running"]
+            if key in self.data["stats"]:
+                self.data["stats"][key] += 1
+                self.data["stats"]["total"] += 1
+            self._save()
     
-    def reset_all(self):
+    def set_running(self, status):
         with self.lock:
-            self.data["metrics"] = {
-                "active_workers": 0,
-                "total_sessions": 0,
-                "success_count": 0,
-                "failed_count": 0,
-                "rate_limit_count": 0,
-                "total_attempts": 0,
-                "last_updated": None
-            }
+            self.data["running"] = status
+            self._save()
+    
+    def is_running(self):
+        with self.lock:
+            return self.data.get("running", False)
+    
+    def reset(self):
+        with self.lock:
             self.data["workers"] = {}
-            self.data["pairing_codes"] = []
-            self.data["delivery_logs"] = []
-            self.data["system"]["total_processed"] = 0
-            self._save_state()
+            self.data["codes"] = []
+            self.data["logs"] = []
+            self.data["stats"] = {"success": 0, "failed": 0, "rate": 0, "total": 0}
+            self.data["running"] = False
+            self._save()
 
-# ==================== WORKER SIMULATOR ====================
-class WorkerSimulator:
-    def __init__(self, state_manager: StateManager):
-        self.state = state_manager
-        self.running_workers = {}
-        self.worker_threads = {}
-        self.worker_counter = 0
-        self.lock = threading.Lock()
+# ==================== WORKER ====================
+class Worker:
+    def __init__(self, state: State):
+        self.state = state
+        self.running = {}
+        self.threads = {}
+        self.counter = 0
     
-    def start_workers(self, count: int, target: str):
-        if count > self.state.get_config()["max_workers"]:
-            count = self.state.get_config()["max_workers"]
+    def start(self, count, target):
+        config = self.state.get_config()
+        if count > config.get("max", 50):
+            count = config.get("max", 50)
         
         for i in range(count):
-            worker_id = f"worker_{self.worker_counter + i + 1}"
-            thread = threading.Thread(target=self._run_worker, args=(worker_id, target), daemon=True)
-            thread.start()
-            self.worker_threads[worker_id] = thread
-            self.running_workers[worker_id] = {
-                "status": "active",
+            wid = f"w_{self.counter + i + 1}"
+            t = threading.Thread(target=self._run, args=(wid, target), daemon=True)
+            t.start()
+            self.threads[wid] = t
+            self.running[wid] = {
                 "target": target,
                 "attempts": 0,
-                "started_at": datetime.now().isoformat(),
-                "proxy": f"proxy_{random.randint(1, 10)}"
+                "start": datetime.now().isoformat(),
+                "status": "active"
             }
-            self.state.add_worker(worker_id, self.running_workers[worker_id])
+            self.state.add_worker(wid, self.running[wid])
         
-        self.worker_counter += count
-        self.state.update_metrics(active_workers=len(self.running_workers))
+        self.counter += count
         self.state.set_running(True)
-        
-        logger.info(f"Started {count} workers targeting {target}")
+        logger.info(f"✅ Started {count} workers")
         return count
     
-    def _run_worker(self, worker_id: str, target: str):
-        import time
-        max_retries = self.state.get_config()["max_retries"]
+    def _run(self, wid, target):
+        config = self.state.get_config()
+        retries = config.get("retries", 5)
+        cooldown = config.get("cooldown", 60)
         attempts = 0
         
-        while worker_id in self.running_workers:
+        while wid in self.running:
             try:
                 attempts += 1
-                self.running_workers[worker_id]["attempts"] = attempts
+                self.running[wid]["attempts"] = attempts
                 time.sleep(random.uniform(2, 5))
-                roll = random.random()
                 
+                roll = random.random()
                 if roll < 0.80:
                     code = ''.join(random.choices(string.digits, k=8))
-                    self.state.add_pairing_code(target, code)
-                    self.state.update_metrics(
-                        success_count=self.state.get_metrics()["success_count"] + 1,
-                        total_attempts=self.state.get_metrics()["total_attempts"] + 1
-                    )
-                    channel = random.choice(["SMS", "Telegram", "Email", "WhatsApp"])
-                    self.state.add_delivery_log(target, code, channel)
-                    logger.info(f"✅ {worker_id} → Code {code} for {target} via {channel}")
+                    self.state.add_code(target, code)
+                    self.state.inc_stats("success")
+                    channel = random.choice(["SMS", "Telegram", "Email"])
+                    self.state.add_log(target, code, channel)
+                    logger.info(f"✅ {wid} → {code}")
                 elif roll < 0.95:
-                    self.state.update_metrics(
-                        failed_count=self.state.get_metrics()["failed_count"] + 1,
-                        total_attempts=self.state.get_metrics()["total_attempts"] + 1
-                    )
-                    logger.warning(f"❌ {worker_id} failed for {target}")
+                    self.state.inc_stats("failed")
+                    logger.warning(f"❌ {wid} failed")
                 else:
-                    self.state.update_metrics(
-                        rate_limit_count=self.state.get_metrics()["rate_limit_count"] + 1
-                    )
-                    logger.warning(f"🚫 {worker_id} rate limited for {target}")
-                    time.sleep(self.state.get_config()["cooldown_seconds"])
+                    self.state.inc_stats("rate")
+                    logger.warning(f"🚫 {wid} rate limited")
+                    time.sleep(cooldown)
                 
-                self.running_workers[worker_id]["last_heartbeat"] = datetime.now().isoformat()
-                self.state.add_worker(worker_id, self.running_workers[worker_id])
+                self.running[wid]["last"] = datetime.now().isoformat()
+                self.state.add_worker(wid, self.running[wid])
+                
             except Exception as e:
-                logger.error(f"Worker {worker_id} error: {e}")
-                if attempts >= max_retries:
+                logger.error(f"Worker error: {e}")
+                if attempts >= retries:
                     break
                 time.sleep(5)
         
-        if worker_id in self.running_workers:
-            del self.running_workers[worker_id]
-        if worker_id in self.worker_threads:
-            del self.worker_threads[worker_id]
-        self.state.remove_worker(worker_id)
-        self.state.update_metrics(active_workers=len(self.running_workers))
-        if len(self.running_workers) == 0:
+        if wid in self.running:
+            del self.running[wid]
+        if wid in self.threads:
+            del self.threads[wid]
+        self.state.remove_worker(wid)
+        if len(self.running) == 0:
             self.state.set_running(False)
-        logger.info(f"🛑 Worker {worker_id} stopped")
+        logger.info(f"🛑 {wid} stopped")
     
-    def stop_all_workers(self):
-        worker_ids = list(self.running_workers.keys())
-        for wid in worker_ids:
-            if wid in self.running_workers:
-                del self.running_workers[wid]
-            if wid in self.worker_threads:
-                del self.worker_threads[wid]
+    def stop_all(self):
+        for wid in list(self.running.keys()):
+            if wid in self.running:
+                del self.running[wid]
+            if wid in self.threads:
+                del self.threads[wid]
             self.state.remove_worker(wid)
-        self.state.update_metrics(active_workers=0)
         self.state.set_running(False)
-        logger.info(f"🛑 All {len(worker_ids)} workers stopped")
-        return len(worker_ids)
+        logger.info(f"🛑 All workers stopped")
+        return len(self.running)
     
-    def restart_worker(self, worker_id: str):
-        if worker_id in self.running_workers:
-            target = self.running_workers[worker_id]["target"]
-            del self.running_workers[worker_id]
-            if worker_id in self.worker_threads:
-                del self.worker_threads[worker_id]
-            self.state.remove_worker(worker_id)
-            thread = threading.Thread(target=self._run_worker, args=(worker_id, target), daemon=True)
-            thread.start()
-            self.worker_threads[worker_id] = thread
-            self.running_workers[worker_id] = {
-                "status": "active",
+    def restart(self, wid):
+        if wid in self.running:
+            target = self.running[wid]["target"]
+            del self.running[wid]
+            if wid in self.threads:
+                del self.threads[wid]
+            self.state.remove_worker(wid)
+            
+            t = threading.Thread(target=self._run, args=(wid, target), daemon=True)
+            t.start()
+            self.threads[wid] = t
+            self.running[wid] = {
                 "target": target,
                 "attempts": 0,
-                "started_at": datetime.now().isoformat(),
-                "proxy": f"proxy_{random.randint(1, 10)}"
+                "start": datetime.now().isoformat(),
+                "status": "active"
             }
-            self.state.add_worker(worker_id, self.running_workers[worker_id])
-            logger.info(f"🔄 Worker {worker_id} restarted")
+            self.state.add_worker(wid, self.running[wid])
+            logger.info(f"🔄 {wid} restarted")
             return True
         return False
 
-# ==================== TELEGRAM BOT ====================
-class PairingBot:
+# ==================== BOT ====================
+class BotApp:
     def __init__(self):
-        self.state = StateManager()
-        self.worker = WorkerSimulator(self.state)
-        self.application = None
+        self.state = State()
+        self.worker = Worker(self.state)
+        self.app = None
     
-    def setup_application(self):
-        self.application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("status", self.status_command))
-        self.application.add_handler(CommandHandler("start_spam", self.start_spam_command))
-        self.application.add_handler(CommandHandler("stop_spam", self.stop_spam_command))
-        self.application.add_handler(CommandHandler("stats", self.stats_command))
-        self.application.add_handler(CommandHandler("config", self.config_command))
-        self.application.add_handler(CommandHandler("restart_worker", self.restart_worker_command))
-        self.application.add_handler(CommandHandler("logs", self.logs_command))
-        self.application.add_handler(CommandHandler("reset", self.reset_command))
-        self.application.add_handler(CallbackQueryHandler(self.callback_handler))
-        self.application.add_error_handler(self._error_handler)
-        logger.info("✅ Bot application setup complete")
-        return self.application
+    def run(self):
+        print("="*50)
+        print("🤖 WHATSAPP PAIRING BOT")
+        print("="*50)
+        print(f"Token: {TOKEN[:10]}...")
+        print(f"Users: {ALLOWED_USERS}")
+        print("="*50)
+        
+        self.app = Application.builder().token(TOKEN).build()
+        
+        # Commands
+        self.app.add_handler(CommandHandler("start", self.start))
+        self.app.add_handler(CommandHandler("status", self.status))
+        self.app.add_handler(CommandHandler("spam", self.spam))
+        self.app.add_handler(CommandHandler("stop", self.stop))
+        self.app.add_handler(CommandHandler("stats", self.stats))
+        self.app.add_handler(CommandHandler("config", self.config))
+        self.app.add_handler(CommandHandler("restart", self.restart))
+        self.app.add_handler(CommandHandler("logs", self.logs))
+        self.app.add_handler(CommandHandler("reset", self.reset))
+        self.app.add_handler(CallbackQueryHandler(self.callback))
+        self.app.add_error_handler(self.error)
+        
+        print("✅ Bot ready!")
+        self.app.run_polling()
     
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id not in ALLOWED_USER_IDS:
-            await update.message.reply_text("⛔ *Access Denied*", parse_mode=ParseMode.MARKDOWN)
+    # ========== COMMANDS ==========
+    
+    async def start(self, update, ctx):
+        if update.effective_user.id not in ALLOWED_USERS:
+            await update.message.reply_text("⛔ Access Denied")
             return
         
-        status = "🟢 RUNNING" if self.state.is_running() else "🔴 STOPPED"
-        welcome_text = f"""
-🤖 *WHATSAPP PAIRING BOT* - RAILWAY
+        text = f"""
+🤖 *WhatsApp Pairing Bot*
 
-*Status:* {status}
-*Active Workers:* `{self.state.get_metrics()['active_workers']}`
-*Total Processed:* `{self.state.get_metrics()['total_attempts']}`
+Status: `{"🟢 RUNNING" if self.state.is_running() else "🔴 STOPPED"}`
+Workers: `{len(self.state.get_workers())}`
 
 *Commands:*
-• `/status` - Status sistem
-• `/start_spam [jumlah] [target]` - Mulai spam
-• `/stop_spam` - Hentikan semua
-• `/stats` - Statistik lengkap
-• `/config` - Konfigurasi
-• `/logs` - Log terbaru
-• `/reset` - Reset semua data
+/spam [jumlah] [target] - Mulai spam
+/stop - Hentikan semua
+/status - Status sistem
+/stats - Statistik
+/config - Konfigurasi
+/logs - Log terbaru
+/restart [id] - Restart worker
+/reset - Reset semua data
         """
+        
         keyboard = [
-            [InlineKeyboardButton("📊 Status", callback_data="status"), InlineKeyboardButton("📈 Stats", callback_data="stats")],
-            [InlineKeyboardButton("▶️ Start Spam", callback_data="start_spam"), InlineKeyboardButton("⏹ Stop", callback_data="stop_spam")],
-            [InlineKeyboardButton("📋 Logs", callback_data="logs"), InlineKeyboardButton("⚙️ Config", callback_data="config")]
+            [InlineKeyboardButton("📊 Status", callback_data="status")],
+            [InlineKeyboardButton("▶️ Spam", callback_data="spam"), InlineKeyboardButton("⏹ Stop", callback_data="stop")],
+            [InlineKeyboardButton("📈 Stats", callback_data="stats"), InlineKeyboardButton("📋 Logs", callback_data="logs")]
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
     
-    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id not in ALLOWED_USER_IDS:
+    async def status(self, update, ctx):
+        if update.effective_user.id not in ALLOWED_USERS:
             await update.message.reply_text("⛔ Access Denied")
             return
-        await update.message.chat.send_action(action=ChatAction.TYPING)
-        metrics = self.state.get_metrics()
+        
+        stats = self.state.get_stats()
         workers = self.state.get_workers()
         config = self.state.get_config()
-        status_text = f"""
-📊 *SYSTEM STATUS*
+        
+        text = f"""
+📊 *STATUS*
 • Status: `{"🟢 RUNNING" if self.state.is_running() else "🔴 STOPPED"}`
-• Active: `{metrics.get('active_workers', 0)}/{config.get('max_workers', 50)}`
-• Success: `{metrics.get('success_count', 0)}`
-• Failed: `{metrics.get('failed_count', 0)}`
-• Total: `{metrics.get('total_attempts', 0)}`
-• Workers: `{len(workers)}`
-⏱️ Updated: `{datetime.now().strftime('%H:%M:%S')}`
+• Workers: `{len(workers)}/{config.get("max", 50)}`
+• Success: `{stats.get("success", 0)}`
+• Failed: `{stats.get("failed", 0)}`
+• Total: `{stats.get("total", 0)}`
         """
-        keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data="status")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(status_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
     
-    async def start_spam_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id not in ALLOWED_USER_IDS:
+    async def spam(self, update, ctx):
+        if update.effective_user.id not in ALLOWED_USERS:
             await update.message.reply_text("⛔ Access Denied")
             return
-        args = context.args
+        
+        args = ctx.args
         config = self.state.get_config()
-        jumlah = config.get("max_workers") // 2
-        target = config.get("default_target")
+        count = config.get("max", 50) // 2
+        target = config.get("target", "6281234567890")
+        
         if len(args) >= 1:
             try:
-                jumlah = int(args[0])
-                if jumlah > config.get("max_workers", 50):
-                    jumlah = config.get("max_workers", 50)
+                count = int(args[0])
+                if count > config.get("max", 50):
+                    count = config.get("max", 50)
             except:
                 pass
+        
         if len(args) >= 2:
             target = args[1]
-        await update.message.chat.send_action(action=ChatAction.TYPING)
-        started = self.worker.start_workers(jumlah, target)
-        await update.message.reply_text(f"✅ *SPAM STARTED*\n\nWorkers: `{started}`\nTarget: `{target}`", parse_mode=ParseMode.MARKDOWN)
+        
+        started = self.worker.start(count, target)
+        await update.message.reply_text(f"✅ Started `{started}` workers to `{target}`", parse_mode=ParseMode.MARKDOWN)
     
-    async def stop_spam_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id not in ALLOWED_USER_IDS:
+    async def stop(self, update, ctx):
+        if update.effective_user.id not in ALLOWED_USERS:
             await update.message.reply_text("⛔ Access Denied")
             return
-        await update.message.chat.send_action(action=ChatAction.TYPING)
-        stopped = self.worker.stop_all_workers()
-        await update.message.reply_text(f"🛑 *STOPPED*\n\n{stopped} worker dihentikan.", parse_mode=ParseMode.MARKDOWN)
+        
+        self.worker.stop_all()
+        await update.message.reply_text("🛑 All workers stopped")
     
-    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id not in ALLOWED_USER_IDS:
+    async def stats(self, update, ctx):
+        if update.effective_user.id not in ALLOWED_USERS:
             await update.message.reply_text("⛔ Access Denied")
             return
-        await update.message.chat.send_action(action=ChatAction.TYPING)
-        metrics = self.state.get_metrics()
-        codes = self.state.get_pairing_codes(5)
-        total = metrics.get('total_attempts', 0)
-        rate = round((metrics.get('success_count', 0) / max(total, 1)) * 100, 1)
+        
+        stats = self.state.get_stats()
+        codes = self.state.get_codes(5)
+        
+        total = stats.get("total", 0)
+        rate = round((stats.get("success", 0) / max(total, 1)) * 100, 1)
+        
         text = f"""
 📈 *STATISTICS*
 • Total: `{total}`
-• Success: `{metrics.get('success_count', 0)}`
-• Failed: `{metrics.get('failed_count', 0)}`
+• Success: `{stats.get("success", 0)}`
+• Failed: `{stats.get("failed", 0)}`
 • Rate: `{rate}%`
 
 *Recent Codes:*
 """
-        for code in codes[:5]:
-            text += f"• `{code.get('code', 'N/A')}` → {code.get('phone', 'Unknown')}\n"
+        for c in codes[:5]:
+            text += f"• `{c.get('code', 'N/A')}` → {c.get('phone', 'Unknown')}\n"
+        
         if not codes:
             text += "_No codes yet_"
+        
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
     
-    async def config_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id not in ALLOWED_USER_IDS:
+    async def config(self, update, ctx):
+        if update.effective_user.id not in ALLOWED_USERS:
             await update.message.reply_text("⛔ Access Denied")
             return
+        
         config = self.state.get_config()
-        await update.message.reply_text(f"""
+        text = f"""
 ⚙️ *CONFIG*
-• Max Workers: `{config.get('max_workers', 50)}`
-• Default Target: `{config.get('default_target', 'N/A')}`
-• Cooldown: `{config.get('cooldown_seconds', 60)}s`
-• Max Retries: `{config.get('max_retries', 5)}`
-        """, parse_mode=ParseMode.MARKDOWN)
+• Max Workers: `{config.get("max", 50)}`
+• Target: `{config.get("target", "N/A")}`
+• Cooldown: `{config.get("cooldown", 60)}s`
+• Retries: `{config.get("retries", 5)}`
+        """
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
     
-    async def restart_worker_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id not in ALLOWED_USER_IDS:
+    async def restart(self, update, ctx):
+        if update.effective_user.id not in ALLOWED_USERS:
             await update.message.reply_text("⛔ Access Denied")
             return
-        args = context.args
-        if not args:
-            await update.message.reply_text("❌ Usage: `/restart_worker [worker_id]`", parse_mode=ParseMode.MARKDOWN)
+        
+        if not ctx.args:
+            await update.message.reply_text("❌ Usage: /restart [worker_id]")
             return
-        success = self.worker.restart_worker(args[0])
-        await update.message.reply_text(f"🔄 Worker `{args[0]}` {'restarted' if success else 'not found'}", parse_mode=ParseMode.MARKDOWN)
+        
+        success = self.worker.restart(ctx.args[0])
+        await update.message.reply_text(f"🔄 Worker `{ctx.args[0]}` {'restarted' if success else 'not found'}", parse_mode=ParseMode.MARKDOWN)
     
-    async def logs_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id not in ALLOWED_USER_IDS:
+    async def logs(self, update, ctx):
+        if update.effective_user.id not in ALLOWED_USERS:
             await update.message.reply_text("⛔ Access Denied")
             return
-        logs = self.state.get_delivery_logs(10)
+        
+        logs = self.state.get_logs(10)
         if not logs:
-            await update.message.reply_text("📭 No logs available")
+            await update.message.reply_text("📭 No logs")
             return
-        text = "📋 *RECENT LOGS*\n\n"
+        
+        text = "📋 *LOGS*\n"
         for log in logs[:10]:
             text += f"• {log.get('to', 'N/A')} → {log.get('code', 'N/A')} via {log.get('channel', 'N/A')}\n"
+        
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
     
-    async def reset_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        if user_id not in ALLOWED_USER_IDS:
+    async def reset(self, update, ctx):
+        if update.effective_user.id not in ALLOWED_USERS:
             await update.message.reply_text("⛔ Access Denied")
             return
-        self.worker.stop_all_workers()
-        self.state.reset_all()
-        await update.message.reply_text("🔄 *RESET COMPLETE*", parse_mode=ParseMode.MARKDOWN)
+        
+        self.worker.stop_all()
+        self.state.reset()
+        await update.message.reply_text("🔄 All data reset")
     
-    async def callback_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ========== CALLBACK ==========
+    
+    async def callback(self, update, ctx):
         query = update.callback_query
         await query.answer()
-        user_id = update.effective_user.id
-        if user_id not in ALLOWED_USER_IDS:
+        
+        if update.effective_user.id not in ALLOWED_USERS:
             await query.edit_message_text("⛔ Access Denied")
             return
+        
         data = query.data
+        
         if data == "status":
-            metrics = self.state.get_metrics()
+            stats = self.state.get_stats()
             workers = self.state.get_workers()
             config = self.state.get_config()
             text = f"""
-📊 *SYSTEM STATUS*
+📊 *STATUS*
 • Status: `{"🟢 RUNNING" if self.state.is_running() else "🔴 STOPPED"}`
-• Active: `{metrics.get('active_workers', 0)}/{config.get('max_workers', 50)}`
-• Success: `{metrics.get('success_count', 0)}`
-• Failed: `{metrics.get('failed_count', 0)}`
-• Total: `{metrics.get('total_attempts', 0)}`
+• Workers: `{len(workers)}/{config.get("max", 50)}`
+• Success: `{stats.get("success", 0)}`
+• Failed: `{stats.get("failed", 0)}`
+• Total: `{stats.get("total", 0)}`
             """
-            keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data="status")]]
-            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
-        elif data == "stats":
-            metrics = self.state.get_metrics()
-            codes = self.state.get_pairing_codes(5)
-            total = metrics.get('total_attempts', 0)
-            rate = round((metrics.get('success_count', 0) / max(total, 1)) * 100, 1)
-            text = f"📈 *STATS*\nTotal: `{total}`\nSuccess: `{metrics.get('success_count', 0)}`\nRate: `{rate}%`"
             await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
-        elif data == "start_spam":
+        
+        elif data == "spam":
+            config = self.state.get_config()
+            target = config.get("target", "6281234567890")
             keyboard = [
-                [InlineKeyboardButton("10 Workers", callback_data="start_10"), InlineKeyboardButton("25 Workers", callback_data="start_25")],
-                [InlineKeyboardButton("50 Workers", callback_data="start_50")],
-                [InlineKeyboardButton("🔙 Back", callback_data="status")]
+                [InlineKeyboardButton("10", callback_data="s_10"), InlineKeyboardButton("25", callback_data="s_25")],
+                [InlineKeyboardButton("50", callback_data="s_50")],
+                [InlineKeyboardButton("🔙 Back", callback_data="back")]
             ]
-            await query.edit_message_text("▶️ *START SPAM*\nPilih jumlah worker:", parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
-        elif data.startswith("start_"):
+            await query.edit_message_text(f"▶️ *Spam to {target}*\nPilih jumlah:", parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+        elif data.startswith("s_"):
             count = int(data.split("_")[1]) if data.split("_")[1].isdigit() else 10
             config = self.state.get_config()
-            target = config.get("default_target", "6281234567890")
-            started = self.worker.start_workers(count, target)
-            await query.edit_message_text(f"✅ Started `{started}` workers to `{target}`", parse_mode=ParseMode.MARKDOWN)
-        elif data == "stop_spam":
-            stopped = self.worker.stop_all_workers()
-            await query.edit_message_text(f"🛑 Stopped `{stopped}` workers", parse_mode=ParseMode.MARKDOWN)
+            target = config.get("target", "6281234567890")
+            started = self.worker.start(count, target)
+            await query.edit_message_text(f"✅ Started `{started}` workers", parse_mode=ParseMode.MARKDOWN)
+        
+        elif data == "stop":
+            self.worker.stop_all()
+            await query.edit_message_text("🛑 Stopped all workers")
+        
+        elif data == "stats":
+            stats = self.state.get_stats()
+            total = stats.get("total", 0)
+            rate = round((stats.get("success", 0) / max(total, 1)) * 100, 1)
+            await query.edit_message_text(f"📈 *STATS*\nTotal: `{total}`\nSuccess: `{stats.get('success', 0)}`\nRate: `{rate}%`", parse_mode=ParseMode.MARKDOWN)
+        
         elif data == "logs":
-            logs = self.state.get_delivery_logs(10)
+            logs = self.state.get_logs(10)
             if not logs:
                 await query.edit_message_text("📭 No logs")
                 return
@@ -546,41 +530,29 @@ class PairingBot:
             for log in logs[:10]:
                 text += f"• {log.get('to', 'N/A')} → {log.get('code', 'N/A')}\n"
             await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
-        elif data == "config":
-            config = self.state.get_config()
-            await query.edit_message_text(f"⚙️ *CONFIG*\nMax Workers: `{config.get('max_workers', 50)}`\nTarget: `{config.get('default_target', 'N/A')}`", parse_mode=ParseMode.MARKDOWN)
+        
+        elif data == "back":
+            text = """
+🤖 *WhatsApp Pairing Bot*
+
+Status: `🟢 RUNNING`
+Use /start for menu
+            """
+            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
     
-    async def _error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.error(f"Update {update} caused error: {context.error}")
-        traceback.print_exception(type(context.error), context.error, context.error.__traceback__)
+    # ========== ERROR ==========
+    
+    async def error(self, update, ctx):
+        logger.error(f"Error: {ctx.error}")
+        traceback.print_exception(type(ctx.error), ctx.error, ctx.error.__traceback__)
 
 # ==================== MAIN ====================
-async def main():
-    print("="*60)
-    print("  WHATSAPP PAIRING BOT - RAILWAY VERSION")
-    print("  FIXED: ParseMode import")
-    print("="*60)
-    
-    if TELEGRAM_BOT_TOKEN == "7741123456:AAHdflkjsdflkjsdflkjsdflkjsdflkjsdflk":
-        print("⚠️  WARNING: Using default token!")
-        print("   Set environment variable: TELEGRAM_BOT_TOKEN")
-    
-    print(f"✅ Authorized users: {ALLOWED_USER_IDS}")
-    print("🔄 Bot running...")
-    
-    bot = PairingBot()
-    app = bot.setup_application()
-    
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-    
-    while True:
-        await asyncio.sleep(1)
-
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        bot = BotApp()
+        bot.run()
     except KeyboardInterrupt:
         print("\n👋 Bot stopped")
-        sys.exit(0)
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        traceback.print_exc()
