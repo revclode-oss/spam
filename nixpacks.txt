@@ -1,0 +1,10 @@
+[build]
+phases = [
+  "pip install -r requirements.txt"
+]
+
+[phases.setup]
+nixPkgs = ["python311"]
+
+[start]
+cmd = "python bot_standalone.py"
