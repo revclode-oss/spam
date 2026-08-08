@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-TELEGRAM BOT CONTROLLER - RAILWAY VERSION
-Tanpa Redis - Langsung Run
+TELEGRAM BOT CONTROLLER - RAILWAY VERSION (FIXED)
+Python-telegram-bot v20+ compatible
 """
 
 import asyncio
@@ -17,25 +17,23 @@ import random
 import string
 from datetime import datetime
 from typing import Dict, List, Any
-from collections import defaultdict
 import traceback
 
-# ==================== KONFIGURASI DARI ENVIRONMENT ====================
-# Railway menggunakan environment variables
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "7741123456:AAHdflkjsdflkjsdflkjsdflkjsdflkjsdflk")
-ALLOWED_USER_IDS = os.environ.get("ALLOWED_USER_IDS", "123456789")
-# Parse ALLOWED_USER_IDS (bisa multiple IDs dipisah koma)
+# ==================== KONFIGURASI ====================
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8945238760:AAF0hDSJVRrwbvfrYiZK6BpjumuHDnDIztE")
+ALLOWED_USER_IDS = os.environ.get("ALLOWED_USER_IDS", "8086581937")
 ALLOWED_USER_IDS = [int(x.strip()) for x in ALLOWED_USER_IDS.split(",") if x.strip().isdigit()]
 # ====================================================
 
 # ==================== LIBRARY ====================
 try:
-    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
+    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram.constants import ParseMode  # <-- PERBAIKAN DI SINI
     from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
     from telegram.constants import ChatAction
 except ImportError as e:
     print(f"❌ Library error: {e}")
-    print("   Jalankan: pip install python-telegram-bot==20.6")
+    print("   Jalankan: pip install python-telegram-bot==20.7")
     sys.exit(1)
 
 # ==================== LOGGING ====================
@@ -47,8 +45,6 @@ logger = logging.getLogger(__name__)
 
 # ==================== STATE MANAGER ====================
 class StateManager:
-    """Menyimpan semua state di memory dan backup ke file JSON"""
-    
     def __init__(self):
         self.state_file = "bot_state.json"
         self.data = {
@@ -64,7 +60,6 @@ class StateManager:
             "workers": {},
             "pairing_codes": [],
             "delivery_logs": [],
-            "active_sessions": {},
             "config": {
                 "max_workers": 50,
                 "default_target": "6281234567890",
@@ -314,9 +309,6 @@ class WorkerSimulator:
             logger.info(f"🔄 Worker {worker_id} restarted")
             return True
         return False
-    
-    def get_status(self) -> Dict:
-        return {"active": len(self.running_workers), "workers": self.running_workers.copy()}
 
 # ==================== TELEGRAM BOT ====================
 class PairingBot:
@@ -324,7 +316,6 @@ class PairingBot:
         self.state = StateManager()
         self.worker = WorkerSimulator(self.state)
         self.application = None
-        self.bot_username = "WhatsAppPairingBot"
     
     def setup_application(self):
         self.application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -567,7 +558,7 @@ class PairingBot:
 async def main():
     print("="*60)
     print("  WHATSAPP PAIRING BOT - RAILWAY VERSION")
-    print("  TANPA REDIS - LANGSUNG RUN")
+    print("  FIXED: ParseMode import")
     print("="*60)
     
     if TELEGRAM_BOT_TOKEN == "7741123456:AAHdflkjsdflkjsdflkjsdflkjsdflkjsdflk":
@@ -584,7 +575,6 @@ async def main():
     await app.start()
     await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
     
-    # Keep running
     while True:
         await asyncio.sleep(1)
 
